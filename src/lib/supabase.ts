@@ -7,6 +7,9 @@ import type {
   RiskEventInsert,
   WeeklyGuidance,
   Language,
+  ConversationState,
+  ConversationStateUpdate,
+  MessageTraceInsert,
 } from "@/types/database";
 
 let _client: SupabaseClient | null = null;
@@ -69,6 +72,9 @@ export async function storeMessage(msg: MessageInsert): Promise<Message> {
       message: msg.message,
       raw_message: msg.raw_message ?? null,
       risk_level: msg.risk_level ?? null,
+      message_hash: msg.message_hash ?? null,
+      processing_status: msg.processing_status ?? "completed",
+      intent: msg.intent ?? null,
     })
     .select()
     .single<Message>();
@@ -206,4 +212,58 @@ export async function getPregnancyWeekDistribution() {
   return Object.entries(counts)
     .map(([week, count]) => ({ week: Number(week), count }))
     .sort((a, b) => a.week - b.week);
+}
+
+// --- Idempotency & conversation state ---
+
+export async function checkDuplicate(
+  motherId: string,
+  messageHash: string
+): Promise<boolean> {
+  const { data } = await db()
+    .from("messages")
+    .select("id")
+    .eq("mother_id", motherId)
+    .eq("message_hash", messageHash)
+    .limit(1)
+    .maybeSingle();
+
+  return data !== null;
+}
+
+export async function getConversationState(
+  motherId: string
+): Promise<ConversationState | null> {
+  const { data } = await db()
+    .from("conversation_state")
+    .select("*")
+    .eq("mother_id", motherId)
+    .single<ConversationState>();
+
+  return data ?? null;
+}
+
+export async function updateConversationState(
+  motherId: string,
+  update: ConversationStateUpdate
+): Promise<void> {
+  const { error } = await db()
+    .from("conversation_state")
+    .upsert(
+      {
+        mother_id: motherId,
+        ...update,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "mother_id" }
+    );
+
+  if (error)
+    throw new Error(`Failed to update conversation state: ${error.message}`);
+}
+
+export async function storeTrace(trace: MessageTraceInsert): Promise<void> {
+  const { error } = await db().from("message_traces").insert(trace);
+
+  if (error) throw new Error(`Failed to store trace: ${error.message}`);
 }

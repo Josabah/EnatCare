@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { SmsGatewayTransport } from "@/lib/smsTransport";
+import { SmsGatewayTransport, isReplyableNumber } from "@/lib/smsTransport";
 import { processIncomingMessage } from "@/lib/messageProcessor";
 
 const transport = new SmsGatewayTransport();
@@ -9,9 +9,8 @@ const transport = new SmsGatewayTransport();
  *
  * POST /api/webhooks/sms
  *
- * The SMS Gateway for Android app forwards received SMS here.
- * Payload shape: { event: "sms:received", payload: { sender, message, receivedAt } }
- * Verification: HMAC-SHA256 via X-Signature + X-Timestamp headers.
+ * Idempotency: duplicate webhook deliveries are detected by message hash
+ * inside processIncomingMessage and silently dropped (no duplicate reply).
  */
 export async function POST(request: NextRequest) {
   try {
@@ -35,6 +34,14 @@ export async function POST(request: NextRequest) {
 
     const inbound = transport.parseInbound(body);
 
+    // Drop messages from non-replyable senders (shortcodes, banks, telecom, apps)
+    if (!isReplyableNumber(inbound.phone)) {
+      console.log(
+        `[SMS Webhook] Ignored non-replyable sender: ${inbound.phone}`
+      );
+      return NextResponse.json({ status: "ignored", reason: "non-replyable sender" });
+    }
+
     console.log(
       `[SMS Webhook] Received from ${inbound.phone}: "${inbound.text.slice(0, 60)}"`
     );
@@ -45,13 +52,19 @@ export async function POST(request: NextRequest) {
       { channel: "sms", skipSms: false }
     );
 
+    if (result.deduplicated) {
+      console.log(`[SMS Webhook] Duplicate detected, skipped processing`);
+      return NextResponse.json({ success: true, deduplicated: true });
+    }
+
     console.log(
-      `[SMS Webhook] Processed: risk=${result.assessment.level}, ` +
-        `symptoms=${result.assessment.symptoms.length}, sms_sent=${result.smsSent}`
+      `[SMS Webhook] Processed: intent=${result.intent} risk=${result.assessment.level} ` +
+        `symptoms=${result.assessment.symptoms.length} sms_sent=${result.smsSent}`
     );
 
     return NextResponse.json({
       success: true,
+      intent: result.intent,
       riskLevel: result.assessment.level,
       symptomsDetected: result.assessment.symptoms.length,
       responseSent: result.smsSent,
@@ -65,9 +78,6 @@ export async function POST(request: NextRequest) {
   }
 }
 
-/**
- * Health check — verify the webhook endpoint is active.
- */
 export async function GET() {
   return NextResponse.json({
     status: "ok",

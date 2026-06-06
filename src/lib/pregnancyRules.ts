@@ -60,6 +60,20 @@ function matchSymptoms(symptoms: string[]): DetectedSymptom[] {
   return detected;
 }
 
+/**
+ * Emergency symptom combinations that ALWAYS escalate to HIGH.
+ * These patterns suggest preeclampsia, eclampsia, placental abruption,
+ * or other obstetric emergencies regardless of gestational age.
+ */
+const EMERGENCY_COMBINATIONS: SymptomCategory[][] = [
+  ["headache", "vision"],           // preeclampsia signs
+  ["headache", "swelling"],         // preeclampsia signs
+  ["headache", "convulsion"],       // eclampsia
+  ["bleeding", "pain"],             // placental abruption
+  ["bleeding", "fetal_movement"],   // fetal distress with bleeding
+  ["convulsion", "vision"],         // eclampsia
+];
+
 function determineRiskLevel(
   detected: DetectedSymptom[],
   pregnancyWeek: number | null
@@ -69,9 +83,16 @@ function determineRiskLevel(
   const hasHigh = detected.some((d) => d.severity === "severe");
   if (hasHigh) return "high";
 
+  // Check emergency combinations — two medium/mild symptoms together = HIGH
+  const categories = new Set(detected.map((d) => d.category));
+  for (const combo of EMERGENCY_COMBINATIONS) {
+    if (combo.every((c) => categories.has(c))) {
+      return "high";
+    }
+  }
+
   const hasMedium = detected.some((d) => d.severity === "moderate");
 
-  // Gestational context: some medium symptoms become high-risk in late pregnancy
   if (hasMedium && pregnancyWeek !== null) {
     const latePregnancy = pregnancyWeek >= 28;
     const earlyPregnancy = pregnancyWeek <= 12;
@@ -87,7 +108,6 @@ function determineRiskLevel(
 
   if (hasMedium) return "medium";
 
-  // Multiple low-risk symptoms may warrant monitoring
   if (detected.length >= 3) return "medium";
 
   return "low";

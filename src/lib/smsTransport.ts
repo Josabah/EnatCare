@@ -203,6 +203,47 @@ export class NoopTransport implements MessageTransport {
   }
 }
 
+// ── Sender validation ───────────────────────────────────
+
+/**
+ * Returns true if the sender looks like a real person's phone number
+ * that we can reply to. Returns false for shortcodes, alphanumeric
+ * sender IDs, and service numbers.
+ *
+ * Non-replyable senders include:
+ * - Shortcodes (4-6 digits): "8844", "127", "994"
+ * - Alphanumeric IDs: "EthioTel", "CBE", "Telebirr", "AwashBank"
+ * - Very short numbers (< 7 digits after cleaning)
+ * - Numbers starting with known service prefixes
+ */
+export function isReplyableNumber(sender: string): boolean {
+  const cleaned = sender.replace(/[\s\-()+"]/g, "");
+
+  // Alphanumeric sender ID (contains letters) — not a real phone
+  if (/[a-zA-Z]/.test(cleaned)) return false;
+
+  // Strip country code to get local digits
+  let digits = cleaned;
+  if (digits.startsWith("251")) digits = digits.slice(3);
+  else if (digits.startsWith("0")) digits = digits.slice(1);
+
+  // Ethiopian mobile numbers are 9 digits (9XXXXXXXX or 7XXXXXXXX)
+  // Anything shorter than 7 digits is a shortcode or service number
+  if (digits.length < 7) return false;
+
+  // Ethiopian mobile prefixes:
+  //   9X — Ethio Telecom (all 09XX numbers)
+  //   7X — Safaricom Ethiopia (07XX numbers)
+  if (digits.length === 9 && (digits.startsWith("9") || digits.startsWith("7"))) {
+    return true;
+  }
+
+  // Allow other reasonably-lengthed numbers (international, landline, etc.)
+  if (digits.length >= 7) return true;
+
+  return false;
+}
+
 // ── Helpers ─────────────────────────────────────────────
 
 function asString(val: unknown): string {

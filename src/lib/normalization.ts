@@ -33,6 +33,14 @@ const DICTIONARY: Record<string, string> = {
   semint: "week",
   sement: "week",
   tornet: "week",
+  wra: "month",
+  sment: "week",
+
+  // --- SMS shorthand / abbreviations ---
+  preg: "pregnant",
+  mnths: "months",
+  wks: "weeks",
+  yr: "year",
 
   // --- Pronouns / common sentence words ---
   ene: "I",
@@ -40,29 +48,45 @@ const DICTIONARY: Record<string, string> = {
   anchi: "you",
   esu: "he",
   eswa: "she",
+  ane: "I",
   doctor: "doctor",
   hakim: "doctor",
+  doc: "doctor",
   hospitaal: "hospital",
   hospital: "hospital",
+  hosp: "hospital",
   clinic: "clinic",
   bota: "place",
+  pls: "please",
+  thx: "thanks",
+  bc: "because",
 
   // --- Symptom terms (Romanized Amharic) ---
   ras: "head",
   rase: "head",
+  rasye: "my head",
   yimetagnal: "hurts",
+  yimetagnl: "hurts",
+  yimategnal: "hurts",
   yikorenal: "hurts",
   yikoregnal: "hurts",
+  yikorignal: "hurts",
   yimetal: "nausea",
+  ymetal: "nausea",
   yadetebignal: "impaired",
+  yadtebignal: "impaired",
   birignal: "blurred",
   ayne: "eye",
+  aynem: "eye",
   hod: "stomach",
+  hode: "stomach",
+  hodye: "my stomach",
   igir: "foot",
   ej: "hand",
   fit: "face",
   jerbat: "back",
   dem: "blood",
+  demm: "blood",
   yiferesal: "flowing",
   metat: "coming",
   kurtet: "pain",
@@ -70,16 +94,21 @@ const DICTIONARY: Record<string, string> = {
   tikus: "fever",
   mikiyet: "temperature",
   dekimognal: "tired",
+  dekimognl: "tired",
   slekome: "weak",
   yaskosikosal: "nauseous",
   ababiwal: "swollen",
   tinifas: "breath",
+  tinifase: "breath",
   yikotenal: "difficult",
   chigir: "problem",
   lij: "child",
   lijie: "my child",
+  lije: "my child",
   ayinkasakesim: "not moving",
   yemayinkasakes: "not moving",
+  enakaseskim: "not moving",
+  aynkaseskim: "not moving",
   yemikesakes: "shaking",
   mirgirgir: "shaking",
   wuha: "water",
@@ -114,6 +143,19 @@ const DICTIONARY: Record<string, string> = {
   kebd: "stomach",
   hatsbi: "pain",
 
+  // --- Greetings / conversational ---
+  selam: "hello",
+  salam: "hello",
+  endemin: "how",
+  dehna: "fine",
+  nagaa: "peace",
+  awo: "yes",
+  aye: "no",
+  ishi: "ok",
+  egziabher: "god",
+  yistilign: "thanks",
+  ameseginalehu: "thanks",
+
   // --- Numeric Amharic ---
   and: "1",
   hulet: "2",
@@ -139,16 +181,54 @@ const LANGUAGE_SIGNALS: Record<string, "am" | "om" | "ti"> = {
   rase: "am",
   erguze: "am",
   lijie: "am",
+  yimategnal: "am",
+  yikorignal: "am",
+  yadtebignal: "am",
+  enakaseskim: "am",
+  aynkaseskim: "am",
+  hodye: "am",
+  rasye: "am",
+  lije: "am",
+  selam: "am",
+  yistilign: "am",
+  ameseginalehu: "am",
+  yimetagnl: "am",
+  dekimognl: "am",
   dhukkubbii: "om",
   garaa: "om",
   ulfaa: "om",
   bishaan: "om",
   dhiiga: "om",
+  nagaa: "om",
   matane: "ti",
   hatsbi: "ti",
   resi: "ti",
   kebd: "ti",
 };
+
+// ---------------------------------------------------------------------------
+// Fuzzy normalization — handles typos, doubled letters, trailing vowels, etc.
+// ---------------------------------------------------------------------------
+
+function generateVariants(token: string): string[] {
+  const variants: string[] = [];
+  variants.push(token.replace(/(.)\1+/g, "$1"));
+  variants.push(token.replace(/[aeio]$/, ""));
+  variants.push(token.replace(/a/g, "e"));
+  variants.push(token.replace(/e/g, "a"));
+  return [...new Set(variants)];
+}
+
+export function fuzzyNormalize(token: string): string | null {
+  if (DICTIONARY[token]) return DICTIONARY[token];
+
+  const variants = generateVariants(token);
+  for (const v of variants) {
+    if (DICTIONARY[v]) return DICTIONARY[v];
+  }
+
+  return null;
+}
 
 export function normalizeMessage(raw: string): NormalizationResult {
   const cleaned = raw
@@ -170,7 +250,11 @@ export function normalizeMessage(raw: string): NormalizationResult {
       return DICTIONARY[token];
     }
 
-    // Check if the token looks like English
+    const fuzzyResult = fuzzyNormalize(token);
+    if (fuzzyResult) {
+      return fuzzyResult;
+    }
+
     if (/^[a-z]+$/.test(token) && token.length > 2) {
       languageVotes.en += 1;
     }

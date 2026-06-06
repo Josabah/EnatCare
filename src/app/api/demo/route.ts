@@ -29,7 +29,9 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
+      deduplicated: result.deduplicated ?? false,
       input: { phone, message },
+      intent: result.intent,
       extraction: {
         language: result.context.language,
         symptoms: result.context.symptoms,
