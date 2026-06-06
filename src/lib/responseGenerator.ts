@@ -1,7 +1,7 @@
 /**
  * Response Generator — AI writes the response.
  *
- * Templates are ONLY used as fallback when Hasab AI is unavailable.
+ * Templates are ONLY used as fallback when Gemini is unavailable.
  * The AI handles tone, language, personalization, and out-of-scope detection.
  */
 
@@ -93,7 +93,7 @@ SMS Response:`;
   const aiResponse = await generateAiResponse(prompt);
   if (aiResponse) return truncate(aiResponse);
 
-  // Fallback: template response when Hasab is down
+  // Fallback: template response when Gemini is down
   return buildFallback(ctx);
 }
 

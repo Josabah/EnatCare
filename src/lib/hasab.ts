@@ -1,19 +1,60 @@
 /**
- * Hasab AI — the understanding layer.
+ * AI Layer — powered by Google Gemini.
  *
- * One call. Receives the raw message + context.
- * Returns a structured understanding of everything the mother said.
- * Fallback to keyword extraction when Hasab is unavailable.
+ * Two calls per message:
+ * 1. understandMessage() — extracts structured understanding
+ * 2. generateAiResponse() — writes the SMS response
+ *
+ * Supports multiple API keys (separated by " || " in GEMINI_API_KEY).
+ * Each key maps to a different Google Cloud project with its own
+ * free-tier quota (~1,500 RPD each). Keys rotate round-robin and
+ * automatically skip exhausted keys for 60 s before retrying them.
  */
 
 import type { Language } from "@/types/database";
 
-const HASAB_API_KEY = process.env.HASAB_API_KEY ?? "";
-const HASAB_BASE_URL =
-  process.env.HASAB_BASE_URL ?? "https://api.hasab.ai/api/v1";
+const GEMINI_KEYS = (process.env.GEMINI_API_KEY ?? "")
+  .split("||")
+  .map((k) => k.trim())
+  .filter(Boolean);
+const GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
+const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
-interface HasabChatResponse {
-  message: { role: "assistant"; content: string };
+// ── Key rotation state ─────────────────────────────────
+let currentKeyIndex = 0;
+const cooldowns = new Map<number, number>(); // index → timestamp when cooldown expires
+const COOLDOWN_MS = 60_000;
+
+function getNextKey(): string | null {
+  if (GEMINI_KEYS.length === 0) return null;
+
+  const now = Date.now();
+  for (let i = 0; i < GEMINI_KEYS.length; i++) {
+    const idx = (currentKeyIndex + i) % GEMINI_KEYS.length;
+    const until = cooldowns.get(idx);
+    if (!until || now >= until) {
+      currentKeyIndex = (idx + 1) % GEMINI_KEYS.length;
+      return GEMINI_KEYS[idx];
+    }
+  }
+
+  // All keys on cooldown — use the one closest to expiring
+  let soonest = 0;
+  let soonestTime = Infinity;
+  for (const [idx, until] of cooldowns) {
+    if (until < soonestTime) { soonest = idx; soonestTime = until; }
+  }
+  cooldowns.delete(soonest);
+  currentKeyIndex = (soonest + 1) % GEMINI_KEYS.length;
+  return GEMINI_KEYS[soonest];
+}
+
+function markKeyExhausted(key: string): void {
+  const idx = GEMINI_KEYS.indexOf(key);
+  if (idx !== -1) {
+    cooldowns.set(idx, Date.now() + COOLDOWN_MS);
+    console.warn(`[AI] Key #${idx + 1} rate-limited, cooldown 60s (${GEMINI_KEYS.length - 1} remaining)`);
+  }
 }
 
 export interface MessageUnderstanding {
@@ -28,39 +69,45 @@ export interface MessageUnderstanding {
   confidence: number;
 }
 
-const UNDERSTANDING_PROMPT = `You are a medical information extraction system for EnatAI, a maternal health SMS service in Ethiopia.
+const UNDERSTANDING_SYSTEM = `You are a medical information extraction system for EnatAI, a maternal health SMS service in Ethiopia.
 
 Your job: understand EVERYTHING in the mother's message. Not just one thing — everything.
 
-The message may be in Amharic (Ge'ez script '), Romanized Amharic, Afaan Oromo, Tigrinya, English, or mixed.
+The message may be in Amharic (Ge'ez script), Romanized Amharic, Afaan Oromo, Tigrinya, English, or mixed language. You understand all of these natively.
 
-CONTEXT:
-{{CONTEXT}}
+Common Amharic medical terms you must recognize (and ALL their spelling variations):
+- dem/demchalew/medmat/ደም = bleeding
+- ras/rase/rasye/rasien + yimetagnal/yimetagnl/eyamemegn/yamegnal = headache
+- hod/hodye + yikoregnal/yikorenal = abdominal pain
+- ayne/aynem + yadetebignal = vision changes
+- tinifas/tinifase + chigir = breathing difficulty
+- lij/lijie + ayinkasakesim/enakaseskim = no fetal movement
+- cramp/kurtet = cramping
+- wer/wor = month (pregnancy)
+- ene X wer negn = I am X months pregnant
 
-Extract this JSON from the message:
+Extract this JSON:
 {
   "language": "am" | "om" | "ti" | "en" | "mixed",
   "pregnancyRelated": true or false,
-  "pregnancyWeek": number or null (convert months to weeks: month × 4),
-  "symptoms": ["bleeding", "headache", ...] (normalize ALL symptoms to English, e.g. "dem"/"demchalew"/"medmat"/"ደም" = "bleeding", "ras yimetagnal"/"rase yimetagnal"/"rasye" = "headache", "hod yikoregnal" = "abdominal pain", "ayne yadetebignal" = "vision changes", "cramp"/"kurtet" = "cramping"),
-  "questions": ["What foods should I eat?"] (any questions the mother asked, translated to English),
+  "pregnancyWeek": number or null (convert months × 4),
+  "symptoms": ["symptom1", "symptom2"] (normalized to English),
+  "questions": ["question in English"],
   "emotionalState": "neutral" | "concerned" | "anxious" | "distressed" | "happy",
-  "missingInformation": ["headache_severity", "cramp_location"] (what would be useful to know),
-  "messageSummary": "one sentence summary in English of what the mother said"
+  "missingInformation": ["what would be useful to know"],
+  "messageSummary": "one sentence English summary"
 }
 
 Rules:
 - Extract ALL symptoms, not just the first one
-- Extract pregnancy week AND symptoms from the same message
-- If the message contains a greeting AND symptoms, extract both
-- If the message is not about pregnancy/health at all, set pregnancyRelated to false
-- Normalize ALL symptom names to English regardless of input language
+- Extract pregnancy info AND symptoms from the same message
+- If message has a greeting AND symptoms, extract both
+- If not about pregnancy/health at all, set pregnancyRelated to false
+- Normalize ALL symptom names to English
 - Convert months to weeks (month × 4)
-- "confidence" is not needed — just extract accurately
+- "selam", "hi", "hello" are greetings — they ARE pregnancy-related (the mother is reaching out)
 
-Respond with ONLY valid JSON. No explanation. No markdown.
-
-Message: `;
+Respond with ONLY valid JSON.`;
 
 export async function understandMessage(
   message: string,
@@ -71,51 +118,33 @@ export async function understandMessage(
     pendingQuestion?: string | null;
   } = {}
 ): Promise<MessageUnderstanding> {
-  if (!HASAB_API_KEY) {
-    console.warn("[Hasab] No API key, using fallback extraction");
+  if (GEMINI_KEYS.length === 0) {
+    console.warn("[AI] No GEMINI_API_KEY configured, using fallback");
     return fallbackUnderstanding(message);
   }
 
   try {
     const contextParts: string[] = [];
     if (context.pregnancyWeek) {
-      contextParts.push(`Mother is at week ${context.pregnancyWeek} of pregnancy.`);
+      contextParts.push(`Mother is at week ${context.pregnancyWeek}.`);
     }
     if (context.previousSymptoms?.length) {
-      contextParts.push(`Previously reported symptoms: ${context.previousSymptoms.join(", ")}`);
+      contextParts.push(`Previous symptoms: ${context.previousSymptoms.join(", ")}`);
     }
     if (context.pendingQuestion) {
-      contextParts.push(`The assistant last asked: "${context.pendingQuestion}"`);
+      contextParts.push(`You last asked: "${context.pendingQuestion}"`);
     }
     if (context.conversationHistory?.length) {
-      contextParts.push(`Recent conversation:\n${context.conversationHistory.slice(-4).join("\n")}`);
+      contextParts.push(`Recent:\n${context.conversationHistory.slice(-4).join("\n")}`);
     }
 
-    const ctxText = contextParts.length > 0 ? contextParts.join("\n") : "No prior context (new conversation).";
-    const prompt = UNDERSTANDING_PROMPT.replace("{{CONTEXT}}", ctxText) + `"${message}"`;
+    const ctxText = contextParts.length > 0
+      ? `\n\nContext:\n${contextParts.join("\n")}`
+      : "";
 
-    const response = await fetch(`${HASAB_BASE_URL}/chat`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${HASAB_API_KEY}`,
-      },
-      body: JSON.stringify({
-        message: prompt,
-        model: "hasab-1-main",
-        temperature: 0.1,
-        max_tokens: 1024,
-        stream: false,
-      }),
-    });
+    const userPrompt = `${ctxText}\n\nMessage: "${message}"`;
 
-    if (!response.ok) {
-      console.error(`[Hasab] API error: ${response.status}`);
-      return fallbackUnderstanding(message);
-    }
-
-    const data = (await response.json()) as HasabChatResponse;
-    const content = data.message?.content;
+    const content = await callGemini(UNDERSTANDING_SYSTEM, userPrompt, 0.1, 1024);
     if (!content) return fallbackUnderstanding(message);
 
     const parsed = JSON.parse(cleanJson(content));
@@ -129,50 +158,81 @@ export async function understandMessage(
       emotionalState: validateEmotion(parsed.emotionalState),
       missingInformation: Array.isArray(parsed.missingInformation) ? parsed.missingInformation : [],
       messageSummary: typeof parsed.messageSummary === "string" ? parsed.messageSummary : "",
-      confidence: 0.8,
+      confidence: 0.85,
     };
   } catch (error) {
-    console.error("[Hasab] Understanding failed:", error);
+    console.error("[AI] Understanding failed:", error);
     return fallbackUnderstanding(message);
   }
 }
 
-/**
- * Generate the final SMS response using AI.
- */
 export async function generateAiResponse(prompt: string): Promise<string | null> {
-  if (!HASAB_API_KEY) return null;
-
-  try {
-    const response = await fetch(`${HASAB_BASE_URL}/chat`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${HASAB_API_KEY}`,
-      },
-      body: JSON.stringify({
-        message: prompt,
-        model: "hasab-1-main",
-        temperature: 0.7,
-        max_tokens: 512,
-        stream: false,
-      }),
-    });
-
-    if (!response.ok) {
-      console.error(`[Hasab] Response gen error: ${response.status}`);
-      return null;
-    }
-
-    const data = (await response.json()) as HasabChatResponse;
-    return data.message?.content?.trim() ?? null;
-  } catch (error) {
-    console.error("[Hasab] Response generation failed:", error);
-    return null;
-  }
+  if (GEMINI_KEYS.length === 0) return null;
+  return callGemini(null, prompt, 0.7, 512);
 }
 
-// ── Fallback (keyword-based, when Hasab is down) ───────
+// ── Gemini API call with key rotation ──────────────────
+
+async function callGemini(
+  systemInstruction: string | null,
+  userMessage: string,
+  temperature: number,
+  maxTokens: number
+): Promise<string | null> {
+  const body: Record<string, unknown> = {
+    contents: [{ role: "user", parts: [{ text: userMessage }] }],
+    generationConfig: {
+      temperature,
+      maxOutputTokens: maxTokens,
+    },
+  };
+
+  if (systemInstruction) {
+    body.systemInstruction = {
+      parts: [{ text: systemInstruction }],
+    };
+  }
+
+  const payload = JSON.stringify(body);
+
+  // Try up to N keys (one attempt per key)
+  for (let attempt = 0; attempt < GEMINI_KEYS.length; attempt++) {
+    const key = getNextKey();
+    if (!key) break;
+
+    const url = `${GEMINI_BASE_URL}/models/${GEMINI_MODEL}:generateContent?key=${key}`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      return typeof text === "string" ? text.trim() : null;
+    }
+
+    const status = response.status;
+
+    // 429 = rate limit, 403 = quota exceeded — rotate to next key
+    if (status === 429 || status === 403) {
+      markKeyExhausted(key);
+      continue;
+    }
+
+    // Other errors (400, 500, etc.) — don't blame the key
+    const errorText = await response.text();
+    console.error(`[AI] Gemini ${status}: ${errorText.slice(0, 200)}`);
+    return null;
+  }
+
+  console.error("[AI] All Gemini keys exhausted");
+  return null;
+}
+
+// ── Fallback (keyword-based, when Gemini is down) ──────
 
 function fallbackUnderstanding(message: string): MessageUnderstanding {
   const lower = message.toLowerCase();
@@ -207,6 +267,8 @@ function fallbackUnderstanding(message: string): MessageUnderstanding {
   const hasAmharic = /\b(ene|negn|yimetagnal|hod|rase)\b/i.test(message);
   const hasOromo = /\b(dhukkubbii|garaa|ulfaa|dhiiga)\b/i.test(message);
   const hasTigrinya = /\b(matane|hatsbi|resi)\b/i.test(message);
+  const hasGreeting = /\b(selam|salam|hi|hello|hey|endemin|dehna)\b/i.test(lower);
+  const hasPregnancy = /\b(pregnant|wer|wor|month|week|erguze|ulfaa)\b/i.test(lower);
 
   let language: Language = "en";
   if (hasGeez || hasAmharic) language = "am";
@@ -222,7 +284,8 @@ function fallbackUnderstanding(message: string): MessageUnderstanding {
 
   return {
     language,
-    pregnancyRelated: symptoms.length > 0 || pregnancyWeek !== null || hasAmharic || hasGeez,
+    pregnancyRelated: symptoms.length > 0 || pregnancyWeek !== null ||
+      hasAmharic || hasGeez || hasGreeting || hasPregnancy,
     pregnancyWeek,
     symptoms,
     questions: [],

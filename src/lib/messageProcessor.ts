@@ -2,9 +2,9 @@
  * Message Processor — the core pipeline.
  *
  * Three steps:
- * 1. AI understands the message (Hasab)
+ * 1. AI understands the message (Gemini)
  * 2. Rules assess risk (deterministic)
- * 3. AI writes the response (Hasab)
+ * 3. AI writes the response (Gemini)
  *
  * Everything else is infrastructure: dedup, storage, SMS transport.
  */
