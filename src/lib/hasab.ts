@@ -184,8 +184,8 @@ async function callGemini(
     generationConfig: {
       temperature,
       maxOutputTokens: maxTokens,
-      thinkingConfig: { thinkingBudget: 0 },
     },
+    thinkingConfig: { thinkingBudget: 0 },
   };
 
   if (systemInstruction) {
