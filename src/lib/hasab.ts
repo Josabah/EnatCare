@@ -220,17 +220,12 @@ async function callGemini(
     }
 
     const status = response.status;
-
-    // 429 = rate limit, 403 = quota exceeded, 401 = invalid key — rotate
-    if (status === 429 || status === 403 || status === 401) {
-      markKeyExhausted(key);
-      continue;
-    }
-
-    // Other errors (400, 500, etc.) — don't blame the key
     const errorText = await response.text();
-    console.error(`[AI] Gemini ${status}: ${errorText.slice(0, 200)}`);
-    return null;
+    console.error(`[AI] Gemini key #${GEMINI_KEYS.indexOf(key) + 1} → ${status}: ${errorText.slice(0, 200)}`);
+
+    // Any failure — cooldown this key and try the next one
+    markKeyExhausted(key);
+    continue;
   }
 
   console.error("[AI] All Gemini keys exhausted");
@@ -273,7 +268,7 @@ function fallbackUnderstanding(message: string): MessageUnderstanding {
   const hasOromo = /\b(dhukkubbii|garaa|ulfaa|dhiiga)\b/i.test(message);
   const hasTigrinya = /\b(matane|hatsbi|resi)\b/i.test(message);
   const hasGreeting = /\b(selam|salam|hi|hello|hey|endemin|dehna)\b/i.test(lower);
-  const hasPregnancy = /\b(pregnant|wer|wor|month|week|erguze|ulfaa)\b/i.test(lower);
+  const hasPregnancy = /\b(pregnant|pregnancy|prenatal|baby|fetus|trimester|wer|wor|month|week|erguze|ulfaa|symptom|milktoch)\b/i.test(lower);
 
   let language: Language = "en";
   if (hasGeez || hasAmharic) language = "am";
