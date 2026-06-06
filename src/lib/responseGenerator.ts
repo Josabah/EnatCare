@@ -73,7 +73,7 @@ ${history || "(first message)"}
 
 RESPONSE RULES:
 1. Respond in ${languageName}
-2. STRICT: Keep under 155 characters total. This is an SMS — every character counts. Be concise.
+2. Keep between 80-155 characters. This is SMS — be warm but concise.
 3. Show you understood their SPECIFIC message
 4. If symptoms found: include the required action from the risk assessment
 5. If HIGH risk: urgency is critical — tell them to go to a health facility NOW
