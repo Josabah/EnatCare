@@ -6,10 +6,6 @@ import { processIncomingMessage } from "@/lib/messageProcessor";
  *
  * POST /api/test/sms
  * Body: { "phone": "+2519xxxxxxx", "message": "..." }
- *
- * Triggers the exact same workflow as a real inbound SMS,
- * but skips actually sending the reply via the Android gateway.
- * Returns the full pipeline result for inspection.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -34,28 +30,29 @@ export async function POST(request: NextRequest) {
       deduplicated: result.deduplicated ?? false,
       input: { phone, message },
       intent: result.intent,
-      pipeline: {
-        extraction: {
-          language: result.context.language,
-          symptoms: result.context.symptoms,
-          pregnancyWeek: result.context.pregnancyWeek,
-          confidence: result.context.confidence,
-        },
-        assessment: {
-          riskLevel: result.assessment.level,
-          detectedSymptoms: result.assessment.symptoms.map((s) => ({
-            name: s.name,
-            category: s.category,
-            severity: s.severity,
-          })),
-          reasoning: result.assessment.reasoning,
-          recommendedAction: result.assessment.recommendedAction,
-          followUpQuestions: result.assessment.followUpQuestions,
-        },
-        response: {
-          text: result.response.text,
-          language: result.response.language,
-        },
+      understanding: {
+        language: result.understanding.language,
+        pregnancyRelated: result.understanding.pregnancyRelated,
+        symptoms: result.understanding.symptoms,
+        pregnancyWeek: result.understanding.pregnancyWeek,
+        questions: result.understanding.questions,
+        emotionalState: result.understanding.emotionalState,
+        summary: result.understanding.messageSummary,
+      },
+      assessment: {
+        riskLevel: result.assessment.level,
+        detectedSymptoms: result.assessment.symptoms.map((s) => ({
+          name: s.name,
+          category: s.category,
+          severity: s.severity,
+        })),
+        reasoning: result.assessment.reasoning,
+        recommendedAction: result.assessment.recommendedAction,
+        followUpQuestions: result.assessment.followUpQuestions,
+      },
+      response: {
+        text: result.response.text,
+        language: result.response.language,
       },
       mother: {
         id: result.mother.id,

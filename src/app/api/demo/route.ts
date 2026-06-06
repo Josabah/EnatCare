@@ -6,8 +6,6 @@ import { processIncomingMessage } from "@/lib/messageProcessor";
  *
  * POST /api/demo
  * Body: { "phone": "+251912345678", "message": "..." }
- *
- * Identical processing to SMS. Only difference: channel="web", no SMS sent.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -32,11 +30,14 @@ export async function POST(request: NextRequest) {
       deduplicated: result.deduplicated ?? false,
       input: { phone, message },
       intent: result.intent,
-      extraction: {
-        language: result.context.language,
-        symptoms: result.context.symptoms,
-        pregnancyWeek: result.context.pregnancyWeek,
-        confidence: result.context.confidence,
+      understanding: {
+        language: result.understanding.language,
+        pregnancyRelated: result.understanding.pregnancyRelated,
+        symptoms: result.understanding.symptoms,
+        pregnancyWeek: result.understanding.pregnancyWeek,
+        questions: result.understanding.questions,
+        emotionalState: result.understanding.emotionalState,
+        summary: result.understanding.messageSummary,
       },
       assessment: {
         riskLevel: result.assessment.level,

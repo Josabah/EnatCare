@@ -1,12 +1,15 @@
+/**
+ * Response Generator — AI writes the response.
+ *
+ * Templates are ONLY used as fallback when Hasab AI is unavailable.
+ * The AI handles tone, language, personalization, and out-of-scope detection.
+ */
+
 import type { RiskAssessment } from "@/types/risk";
-import type { Language, MessageIntent } from "@/types/database";
+import type { Language } from "@/types/database";
+import type { MessageUnderstanding } from "./hasab";
+import { generateAiResponse } from "./hasab";
 import { generateResponse as generateTemplateResponse } from "./pregnancyRules";
-
-export type { MessageIntent };
-
-const HASAB_API_KEY = process.env.HASAB_API_KEY ?? "";
-const HASAB_BASE_URL =
-  process.env.HASAB_BASE_URL ?? "https://api.hasab.ai/api/v1";
 
 const LANGUAGE_NAMES: Record<Language, string> = {
   am: "Amharic",
@@ -17,317 +20,138 @@ const LANGUAGE_NAMES: Record<Language, string> = {
 };
 
 export interface ResponseContext {
-  intent: MessageIntent;
+  rawMessage: string;
+  understanding: MessageUnderstanding;
+  assessment: RiskAssessment;
   language: Language;
   pregnancyWeek: number | null;
   motherName: string | null;
-  assessment: RiskAssessment | null;
   conversationHistory: string[];
   pendingQuestion: string | null;
+  isNewMother: boolean;
 }
-
-interface HasabChatResponse {
-  message: {
-    role: "assistant";
-    content: string;
-  };
-  usage?: {
-    prompt_tokens: number;
-    completion_tokens: number;
-    total_tokens: number;
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Main entry point
-// ---------------------------------------------------------------------------
 
 export async function generateResponse(ctx: ResponseContext): Promise<string> {
-  switch (ctx.intent) {
-    case "greeting":
-      return greetingResponse(ctx);
-    case "registration":
-      return registrationResponse(ctx);
-    case "symptom_report":
-      return symptomResponse(ctx);
-    case "followup_response":
-      return followupResponse(ctx);
-    case "pregnancy_question":
-      return pregnancyQuestionResponse(ctx);
-    case "non_pregnancy_health":
-      return nonPregnancyHealthResponse(ctx);
-    case "unrelated":
-      return unrelatedResponse(ctx);
-    case "unknown":
-    default:
-      return unknownResponse(ctx);
-  }
-}
+  const {
+    rawMessage, understanding, assessment, language, pregnancyWeek,
+    motherName, conversationHistory, pendingQuestion, isNewMother,
+  } = ctx;
 
-// ---------------------------------------------------------------------------
-// Template-based responses (no LLM needed)
-// ---------------------------------------------------------------------------
+  const languageName = LANGUAGE_NAMES[language];
+  const history = conversationHistory.slice(-6).join("\n");
+  const symptoms = understanding.symptoms.join(", ");
+  const questions = understanding.questions.join("; ");
 
-function greetingResponse(ctx: ResponseContext): string {
-  const name = ctx.motherName;
-  const lang = ctx.language;
+  const prompt = `You are EnatAI, a caring and knowledgeable pregnancy companion for Ethiopian mothers. You communicate via SMS.
 
-  if (ctx.pregnancyWeek !== null && name) {
-    const templates: Record<Language, string> = {
-      am: `ሰላም ${name}! እንኳን ደህና ተመለሱ። ዛሬ እንዴት ይሰማዎታል?`,
-      om: `Nagaa ${name}! Baga nagaan deebitee. Har'a akkam jirta?`,
-      ti: `ሰላም ${name}! ደሓን ተመሊስኪ። ሎሚ ከመይ ኣለኺ?`,
-      en: `Hello ${name}! Welcome back. How are you feeling today?`,
-      mixed: `Hello ${name}! Welcome back. How are you feeling today?`,
-    };
-    return templates[lang];
-  }
+THE MOTHER'S MESSAGE:
+"${rawMessage}"
 
-  if (name) {
-    const templates: Record<Language, string> = {
-      am: `ሰላም ${name}! እኔ EnatAI ነኝ፣ የእርግዝና ጤና ጓደኛዎ። ስንት ወር ነው?`,
-      om: `Nagaa ${name}! Ani EnatAI dha, hiriyyaa fayyaa da'umsaa keeti. Ji'a meeqaffaa irra jirta?`,
-      ti: `ሰላም ${name}! ኣነ EnatAI እየ፣ ናይ ጥንሲ ጥዕና መሓዛኺ። ክንደይ ወርሒ ኮይንኪ?`,
-      en: `Hello ${name}! I'm EnatAI, your pregnancy care companion. How many months pregnant are you?`,
-      mixed: `Hello ${name}! I'm EnatAI, your pregnancy care companion. How many months pregnant are you?`,
-    };
-    return templates[lang];
-  }
-
-  const templates: Record<Language, string> = {
-    am: "ሰላም! እኔ EnatAI ነኝ፣ የእርግዝና ጤና ጓደኛዎ። ስንት ወር ነው? (ለምሳሌ: 5 ወር)",
-    om: "Nagaa! Ani EnatAI dha, hiriyyaa fayyaa da'umsaa keeti. Ji'a meeqa irra jirta?",
-    ti: "ሰላም! ኣነ EnatAI እየ፣ ናይ ጥንሲ ጥዕና መሓዛኺ። ክንደይ ወርሒ ኮይንኪ?",
-    en: "Hello! I'm EnatAI, your pregnancy care companion. How many months pregnant are you? (e.g. 5 months)",
-    mixed: "Hello! I'm EnatAI, your pregnancy care companion. How many months pregnant are you? (e.g. 5 wer)",
-  };
-  return templates[lang];
-}
-
-function registrationResponse(ctx: ResponseContext): string {
-  const week = ctx.pregnancyWeek;
-  const lang = ctx.language;
-
-  if (week === null) {
-    const templates: Record<Language, string> = {
-      am: "ስንት ወር ነው እርጉዝ የሆኑት? ቁጥር ብቻ ይላኩ። (ለምሳሌ: 5 ወር)",
-      om: "Ji'a meeqa ulfaa taatee? Lakkoofsa qofa ergi. (Fkn: 5 ji'a)",
-      ti: "ክንደይ ወርሒ ጥንስ ኮይንኪ? ቁጽሪ ጥራይ ስደዲ።",
-      en: "How many months pregnant are you? Just send the number (e.g. 5 months).",
-      mixed: "How many months pregnant are you? (e.g. 5 wer)",
-    };
-    return templates[lang];
-  }
-
-  const month = Math.round(week / 4);
-
-  const templates: Record<Language, string> = {
-    am: `አመሰግናለሁ! ${month} ወር (${week} ሳምንት) ተመዝግቧል። EnatAI በእርግዝናዎ ጊዜ ሁሉ አብሮዎት ይሆናል። ማንኛውም ምልክት ወይም ጥያቄ ካለዎት ያሳውቁኝ።`,
-    om: `Galatoomi! Ji'a ${month} (torban ${week}) galmaa'eera. EnatAI yeroo ulfaa kee hunda si waliin ta'a. Mallattoo ykn gaaffii yoo qabaatte na beeksisi.`,
-    ti: `አመስግነኪ! ${month} ወርሒ (${week} ሰሙን) ተመዝጊቡ። EnatAI ኣብ ግዜ ጥንስኺ ምሳኺ ክኸውን እዩ። ምልክት ወይ ሕቶ እንተሃልዩ ሓብሪኒ።`,
-    en: `Thank you! Registered at ${month} months (week ${week}). EnatAI will be with you throughout your pregnancy. Let me know if you have any symptoms or questions.`,
-    mixed: `Thank you! ${month} months (week ${week}) registered. EnatAI will be with you. Tell me about any symptoms or questions.`,
-  };
-  return templates[lang];
-}
-
-function nonPregnancyHealthResponse(ctx: ResponseContext): string {
-  const lang = ctx.language;
-
-  const templates: Record<Language, string> = {
-    am: "EnatAI በእርግዝና ጤና ላይ ያተኩራል። ለዚህ ችግር እባክዎ ወደ ጤና ባለሙያ ይሂዱ። የእርግዝና ጥያቄ ካለዎት ለመርዳት ዝግጁ ነኝ።",
-    om: "EnatAI fayyaa da'umsaa irratti xiyyeeffata. Rakkoo kanaaf maaloo ogeessa fayyaa mari. Gaaffii ulfaa yoo qabaatte, si gargaaruuf qophii dha.",
-    ti: "EnatAI ኣብ ጥዕና ጥንሲ ዘተኰረ እዩ። ነዚ ጸገም ብኽብረትኪ ናብ ሓኪም ኪዲ። ናይ ጥንሲ ሕቶ እንተሃልዩ ክሕግዘኪ ድልዊ እየ።",
-    en: "EnatAI specializes in pregnancy care. For this health concern, please consult a healthcare provider. If you have pregnancy-related questions, I'm here to help!",
-    mixed: "EnatAI specializes in pregnancy care. For this concern, please see a healthcare provider. For pregnancy questions, I'm here to help!",
-  };
-  return templates[lang];
-}
-
-function unrelatedResponse(ctx: ResponseContext): string {
-  const lang = ctx.language;
-
-  const templates: Record<Language, string> = {
-    am: "እኔ EnatAI ነኝ፣ የእርግዝና ጤና ጓደኛዎ። በእርግዝና ምልክቶች፣ መመሪያ እና ጤና ጥያቄዎች ልረዳዎ እችላለሁ። እንዴት ልረዳዎ?",
-    om: "Ani EnatAI dha, hiriyyaa fayyaa da'umsaa keeti. Mallattoo ulfaa, qajeelfamaa fi gaaffii fayyaa irratti si gargaaruu danda'a. Akkamitti si gargaaruu?",
-    ti: "ኣነ EnatAI እየ፣ ናይ ጥንሲ ጥዕና መሓዛኺ። ብምልክታት ጥንሲ፣ መምርሒ ከምኡውን ሕቶ ጥዕና ክሕግዘኪ እኽእል። ከመይ ክሕግዘኪ?",
-    en: "I'm EnatAI, your pregnancy care companion. I can help with pregnancy symptoms, guidance, and health questions during pregnancy. How can I help you today?",
-    mixed: "I'm EnatAI, your pregnancy care companion. I can help with pregnancy symptoms, guidance, and health questions. How can I help you today?",
-  };
-  return templates[lang];
-}
-
-function unknownResponse(ctx: ResponseContext): string {
-  const lang = ctx.language;
-
-  const templates: Record<Language, string> = {
-    am: "መልእክትዎን ሙሉ በሙሉ አልገባኝም። ስለ እርግዝና ምልክቶች ሊነግሩኝ፣ ጥያቄ ሊጠይቁ ወይም ስንት ወር እንደሆኑ ሊነግሩኝ ይችላሉ።",
-    om: "Ergaa kee guutuutti hin hubanne. Mallattoo ulfaa naaf himuu, gaaffii gaafachuu, ykn ji'a meeqa akka taate naaf himuu dandeessa.",
-    ti: "ሙሉእ ብሙሉእ መልእኽትኺ ኣይተረድኣንን። ብዛዕባ ምልክታት ጥንሲ ክትነግሪኒ፣ ሕቶ ክትሓቲ ወይ ክንደይ ወርሒ ምዃንኪ ክትነግሪኒ ትኽእሊ።",
-    en: "I didn't fully understand your message. You can tell me about pregnancy symptoms, ask pregnancy questions, or tell me how many months pregnant you are.",
-    mixed: "I didn't fully understand your message. You can tell me about pregnancy symptoms, ask questions, or tell me how many months (wer) pregnant you are.",
-  };
-  return templates[lang];
-}
-
-// ---------------------------------------------------------------------------
-// Follow-up responses — context-aware
-// ---------------------------------------------------------------------------
-
-function followupResponse(ctx: ResponseContext): string {
-  if (ctx.pendingQuestion) {
-    return unknownResponse(ctx);
-  }
-
-  const lang = ctx.language;
-  const templates: Record<Language, string> = {
-    am: "ስለ መልስዎ አመሰግናለሁ። ሌላ ጥያቄ ወይም ምልክት ካለዎት ያሳውቁኝ።",
-    om: "Deebii keef galatoomi. Gaaffii ykn mallattoo biraa yoo qabaatte na beeksisi.",
-    ti: "ንመልስኺ አመስግነኪ። ካልእ ሕቶ ወይ ምልክት እንተሃልዩ ሓብሪኒ።",
-    en: "Thank you for your response. Let me know if you have any other questions or symptoms.",
-    mixed: "Thank you for your response. Let me know if you have other questions or symptoms.",
-  };
-  return templates[lang];
-}
-
-// ---------------------------------------------------------------------------
-// AI-powered responses (Hasab AI with template fallback)
-// ---------------------------------------------------------------------------
-
-async function symptomResponse(ctx: ResponseContext): Promise<string> {
-  if (!ctx.assessment) {
-    return unknownResponse(ctx);
-  }
-
-  const { assessment, language, pregnancyWeek } = ctx;
-
-  // Try Hasab AI for a natural, caring response
-  if (HASAB_API_KEY) {
-    try {
-      const languageName = LANGUAGE_NAMES[language];
-      const symptoms = assessment.symptoms.map((s) => s.name).join(", ");
-      const history = ctx.conversationHistory.slice(-3).join("\n");
-
-      const prompt = `You are EnatAI, a caring maternal health companion for Ethiopian mothers. Generate a natural, warm SMS response.
-
-CONTEXT:
+WHAT YOU UNDERSTOOD:
 - Language: ${languageName}
+- Pregnancy related: ${understanding.pregnancyRelated}
 - Pregnancy week: ${pregnancyWeek ?? "unknown"}
-- Risk level: ${assessment.level} (determined by medical rules, do NOT change)
-- Recommended action: ${assessment.recommendedAction}
-- Detected symptoms: ${symptoms}
-- Recent conversation: ${history || "none"}
+- Symptoms found: ${symptoms || "none"}
+- Questions asked: ${questions || "none"}
+- Emotional state: ${understanding.emotionalState}
+- Missing information: ${understanding.missingInformation.join(", ") || "none"}
+- Summary: ${understanding.messageSummary}
 
-RULES:
-- Respond in ${languageName}
-- Keep under 400 characters (SMS limit)
-- Be warm and caring, not clinical
-- Include the recommended action naturally
-- If HIGH risk: urgency is critical, tell them to go to hospital NOW
-- If MEDIUM risk: encourage monitoring, mention next clinic visit
-- If LOW risk: reassure, give practical advice
-- NEVER diagnose
-- NEVER guarantee outcomes
-- Ask ONE follow-up question if relevant
+MOTHER'S PROFILE:
+- Name: ${motherName ?? "unknown"}
+- New mother: ${isNewMother ? "yes (first time)" : "no (returning)"}
+- Previous question from you: ${pendingQuestion ?? "none"}
+
+RISK ASSESSMENT (from medical rules — do NOT change):
+- Risk level: ${assessment.level.toUpperCase()}
+- Reasoning: ${assessment.reasoning}
+- Required action: ${assessment.recommendedAction}
+- Follow-up needed: ${assessment.followUpQuestions.join("; ") || "none"}
+
+CONVERSATION HISTORY:
+${history || "(first message)"}
+
+RESPONSE RULES:
+1. Respond in ${languageName}
+2. Keep under 400 characters (SMS limit)
+3. Show you understood their SPECIFIC message — reference what they actually said
+4. Address ALL parts: if they registered AND reported symptoms, acknowledge both
+5. If symptoms found: naturally include the required action from the risk assessment
+6. If HIGH risk: urgency is critical — tell them to go to a health facility NOW
+7. If MEDIUM risk: encourage monitoring, mention clinic visit
+8. If LOW risk: reassure with practical advice
+9. If the message is NOT pregnancy-related: politely explain you are a pregnancy health assistant and suggest they see a healthcare provider for other concerns. Be natural about it.
+10. If new mother and pregnancy week unknown: ask how many months pregnant they are
+11. If emotional state is anxious/distressed: be extra gentle and reassuring
+12. NEVER diagnose or name a medical condition
+13. NEVER guarantee outcomes
+14. Ask ONE useful follow-up question when relevant
+15. Do NOT use generic phrases like "What you described is common during pregnancy" or "Let me know if you have questions"
 
 SMS Response:`;
 
-      const aiResponse = await callHasab(prompt);
-      if (aiResponse) return truncateSms(aiResponse);
-    } catch (error) {
-      console.error("Hasab AI response generation failed:", error);
-    }
-  }
+  const aiResponse = await generateAiResponse(prompt);
+  if (aiResponse) return truncate(aiResponse);
 
-  // Fallback to template-based response from pregnancyRules
-  return generateTemplateResponse(assessment, language, pregnancyWeek);
+  // Fallback: template response when Hasab is down
+  return buildFallback(ctx);
 }
 
-async function pregnancyQuestionResponse(ctx: ResponseContext): Promise<string> {
-  const { language, conversationHistory } = ctx;
+function buildFallback(ctx: ResponseContext): string {
+  const { understanding, assessment, language, pregnancyWeek, isNewMother } = ctx;
+  const parts: string[] = [];
 
-  if (HASAB_API_KEY) {
-    try {
-      const languageName = LANGUAGE_NAMES[language];
-      const question = conversationHistory.length > 0
-        ? conversationHistory[conversationHistory.length - 1]
-        : "";
-      const weekContext = ctx.pregnancyWeek
-        ? `The mother is at week ${ctx.pregnancyWeek} of pregnancy.`
-        : "Pregnancy week is unknown.";
-
-      const prompt = `You are EnatAI, a caring maternal health companion for Ethiopian mothers. Answer this pregnancy question.
-
-Question: "${question}"
-
-Context: ${weekContext}
-
-RULES:
-- Answer in ${languageName}
-- Keep response under 400 characters (SMS limit)
-- Only answer if it's about pregnancy, maternal health, or newborn care
-- If the question is not pregnancy-related, politely say you specialize in pregnancy care
-- Be warm, supportive, and practical
-- NEVER diagnose or prescribe medication
-- If unsure, recommend consulting a healthcare provider
-- Do not make up medical facts
-
-Answer:`;
-
-      const aiResponse = await callHasab(prompt);
-      if (aiResponse) return truncateSms(aiResponse);
-    } catch (error) {
-      console.error("Hasab AI pregnancy question failed:", error);
-    }
+  if (!understanding.pregnancyRelated) {
+    const oos: Record<Language, string> = {
+      am: "EnatAI በእርግዝና ጤና ላይ ያተኩራል። ለዚህ ችግር ወደ ጤና ባለሙያ ይሂዱ።",
+      om: "EnatAI fayyaa da'umsaa irratti xiyyeeffata. Rakkoo kanaaf ogeessa fayyaa mari.",
+      ti: "EnatAI ኣብ ጥዕና ጥንሲ ዘተኰረ እዩ። ነዚ ብኽብረትኪ ናብ ሓኪም ኪዲ።",
+      en: "EnatAI focuses on pregnancy care. For other health concerns, please see a healthcare provider.",
+      mixed: "EnatAI focuses on pregnancy care. For other concerns, please see a healthcare provider.",
+    };
+    return oos[language];
   }
 
-  // Template fallback for pregnancy questions
-  const templates: Record<Language, string> = {
-    am: "ጥሩ ጥያቄ ነው! ለተሻለ መልስ ጤና ባለሙያዎን ያማክሩ። ምልክት ካጋጠมዎ ያሳውቁኝ።",
-    om: "Gaaffii gaarii dha! Deebii foyyaa'aaf ogeessa fayyaa kee mari. Mallattoo yoo qabaatte na beeksisi.",
-    ti: "ጽቡቕ ሕቶ! ንዝሓሸ መልሲ ሓኪምኪ ኣማኽሪ። ምልክት እንተሃልዩ ሓብሪኒ።",
-    en: "Great question! For the best answer, please consult your healthcare provider at your next visit. If you experience any symptoms, let me know.",
-    mixed: "Great question! Please consult your healthcare provider for the best answer. If you have symptoms, let me know.",
-  };
-  return templates[language];
-}
-
-// ---------------------------------------------------------------------------
-// Hasab AI call
-// ---------------------------------------------------------------------------
-
-async function callHasab(prompt: string): Promise<string | null> {
-  const response = await fetch(`${HASAB_BASE_URL}/chat`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${HASAB_API_KEY}`,
-    },
-    body: JSON.stringify({
-      message: prompt,
-      model: "hasab-1-main",
-      temperature: 0.7,
-      max_tokens: 512,
-      stream: false,
-    }),
-  });
-
-  if (!response.ok) {
-    console.error(
-      `Hasab API error: ${response.status} ${response.statusText}`
-    );
-    return null;
+  if (understanding.symptoms.length > 0) {
+    parts.push(generateTemplateResponse(assessment, language, pregnancyWeek));
   }
 
-  const data = (await response.json()) as HasabChatResponse;
-  return data.message?.content?.trim() ?? null;
+  if (understanding.pregnancyWeek !== null && parts.length === 0) {
+    const month = Math.round((understanding.pregnancyWeek) / 4);
+    const reg: Record<Language, string> = {
+      am: `${month} ወር ተመዝግቧል። ማንኛውም ምልክት ካለዎት ያሳውቁኝ።`,
+      om: `Ji'a ${month} galmaa'eera. Mallattoo yoo qabaatte na beeksisi.`,
+      ti: `${month} ወርሒ ተመዝጊቡ። ምልክት እንተሃልዩ ሓብሪኒ።`,
+      en: `Registered at ${month} months. Let me know if you have any symptoms.`,
+      mixed: `${month} months registered. Tell me about any symptoms.`,
+    };
+    parts.push(reg[language]);
+  }
+
+  if (isNewMother && understanding.pregnancyWeek === null) {
+    const ask: Record<Language, string> = {
+      am: "ስንት ወር ነው?", om: "Ji'a meeqa?", ti: "ክንደይ ወርሒ?",
+      en: "How many months pregnant are you?",
+      mixed: "How many months pregnant are you?",
+    };
+    parts.push(ask[language]);
+  }
+
+  if (parts.length === 0) {
+    const generic: Record<Language, string> = {
+      am: "እንዴት ልረዳዎ? ስለ እርግዝና ምልክቶች ወይም ጥያቄ ያሳውቁኝ።",
+      om: "Akkamitti si gargaaruu? Mallattoo ykn gaaffii ulfaa naaf himi.",
+      ti: "ከመይ ክሕግዘኪ? ብዛዕባ ምልክታት ጥንሲ ሓብሪኒ።",
+      en: "How can I help? Tell me about any pregnancy symptoms or questions.",
+      mixed: "How can I help? Tell me about pregnancy symptoms or questions.",
+    };
+    parts.push(generic[language]);
+  }
+
+  return truncate(parts.join(" "));
 }
 
-// ---------------------------------------------------------------------------
-// Utility
-// ---------------------------------------------------------------------------
-
-function truncateSms(text: string): string {
+function truncate(text: string): string {
   if (text.length <= 400) return text;
   return text.slice(0, 397) + "...";
 }
