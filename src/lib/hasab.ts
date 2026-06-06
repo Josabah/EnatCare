@@ -168,7 +168,7 @@ export async function understandMessage(
 
 export async function generateAiResponse(prompt: string): Promise<string | null> {
   if (GEMINI_KEYS.length === 0) return null;
-  return callGemini(null, prompt, 0.7, 512);
+  return callGemini(null, prompt, 0.7, 2048);
 }
 
 // ── Gemini API call with key rotation ──────────────────
@@ -185,7 +185,6 @@ async function callGemini(
       temperature,
       maxOutputTokens: maxTokens,
     },
-    thinkingConfig: { thinkingBudget: 0 },
   };
 
   if (systemInstruction) {
