@@ -28,6 +28,10 @@ import {
 } from "./supabase";
 import { sendSMS } from "./smsGateway";
 
+// In-memory lock to prevent the same serverless instance from
+// processing duplicate webhook retries concurrently.
+const inflightHashes = new Set<string>();
+
 export interface ProcessingResult {
   mother: Mother;
   understanding: MessageUnderstanding;
@@ -67,6 +71,7 @@ export async function processIncomingMessage(
   };
   let responseText = "";
   let error: string | null = null;
+  const messageHash = generateMessageHash(phone, rawMessage);
 
   try {
     // ── Infrastructure: find mother, deduplicate ────────
@@ -74,9 +79,16 @@ export async function processIncomingMessage(
     mother = await findOrCreateMother(phone);
     const isNewMother = !mother.pregnancy_week;
 
-    const messageHash = generateMessageHash(phone, rawMessage);
-    const isDuplicate = await checkDuplicate(mother.id, messageHash);
+    // Two-layer dedup: in-memory lock (same instance) + DB check (cross-instance)
+    if (inflightHashes.has(messageHash)) {
+      return {
+        mother, understanding, assessment,
+        response: { text: "", language: "en", riskLevel: "low", includesGuidance: false },
+        intent: "unknown", smsSent: false, deduplicated: true,
+      };
+    }
 
+    const isDuplicate = await checkDuplicate(mother.id, messageHash);
     if (isDuplicate) {
       logTrace({
         phone, channel, rawMessage, detectedLanguage: null,
@@ -91,11 +103,13 @@ export async function processIncomingMessage(
       };
     }
 
+    // Claim this hash immediately — store message FIRST, then mark inflight
     const inboundMsg = await storeMessage({
       mother_id: mother.id, channel, direction: "inbound",
       message: rawMessage, raw_message: rawMessage,
       message_hash: messageHash, processing_status: "processing",
     });
+    inflightHashes.add(messageHash);
 
     // ── Conversation context ───────────────────────────
 
@@ -212,6 +226,8 @@ export async function processIncomingMessage(
       processing_time_ms: processingTimeMs,
     });
 
+    inflightHashes.delete(messageHash);
+
     return {
       mother, understanding, assessment,
       response: {
@@ -222,6 +238,7 @@ export async function processIncomingMessage(
       intent: primaryIntent, smsSent,
     };
   } catch (err) {
+    inflightHashes.delete(messageHash);
     error = err instanceof Error ? err.message : "Unknown error";
     const processingTimeMs = traceEnd(traceId);
 

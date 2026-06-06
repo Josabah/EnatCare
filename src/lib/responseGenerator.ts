@@ -73,20 +73,17 @@ ${history || "(first message)"}
 
 RESPONSE RULES:
 1. Respond in ${languageName}
-2. Keep under 400 characters (SMS limit)
-3. Show you understood their SPECIFIC message — reference what they actually said
-4. Address ALL parts: if they registered AND reported symptoms, acknowledge both
-5. If symptoms found: naturally include the required action from the risk assessment
-6. If HIGH risk: urgency is critical — tell them to go to a health facility NOW
-7. If MEDIUM risk: encourage monitoring, mention clinic visit
-8. If LOW risk: reassure with practical advice
-9. If the message is NOT pregnancy-related: politely explain you are a pregnancy health assistant and suggest they see a healthcare provider for other concerns. Be natural about it.
-10. If new mother and pregnancy week unknown: ask how many months pregnant they are
-11. If emotional state is anxious/distressed: be extra gentle and reassuring
-12. NEVER diagnose or name a medical condition
-13. NEVER guarantee outcomes
-14. Ask ONE useful follow-up question when relevant
-15. Do NOT use generic phrases like "What you described is common during pregnancy" or "Let me know if you have questions"
+2. STRICT: Keep under 155 characters total. This is an SMS — every character counts. Be concise.
+3. Show you understood their SPECIFIC message
+4. If symptoms found: include the required action from the risk assessment
+5. If HIGH risk: urgency is critical — tell them to go to a health facility NOW
+6. If MEDIUM risk: encourage clinic visit
+7. If LOW risk: reassure with practical advice
+8. If NOT pregnancy-related: briefly explain you focus on pregnancy care
+9. If new mother and pregnancy week unknown: warmly ask how many months pregnant
+10. NEVER diagnose or name a medical condition
+11. NEVER guarantee outcomes
+12. Do NOT use filler phrases
 
 SMS Response:`;
 
@@ -152,6 +149,11 @@ function buildFallback(ctx: ResponseContext): string {
 }
 
 function truncate(text: string): string {
-  if (text.length <= 400) return text;
-  return text.slice(0, 397) + "...";
+  if (text.length <= 160) return text;
+  // Cut at last sentence or space boundary within 160 chars
+  const cut = text.slice(0, 157);
+  const lastPeriod = cut.lastIndexOf(".");
+  const lastSpace = cut.lastIndexOf(" ");
+  const breakAt = lastPeriod > 100 ? lastPeriod + 1 : lastSpace > 100 ? lastSpace : 157;
+  return text.slice(0, breakAt).trim();
 }

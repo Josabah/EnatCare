@@ -168,7 +168,7 @@ export async function understandMessage(
 
 export async function generateAiResponse(prompt: string): Promise<string | null> {
   if (GEMINI_KEYS.length === 0) return null;
-  return callGemini(null, prompt, 0.7, 512);
+  return callGemini(null, prompt, 0.7, 100);
 }
 
 // ── Gemini API call with key rotation ──────────────────
@@ -216,8 +216,8 @@ async function callGemini(
 
     const status = response.status;
 
-    // 429 = rate limit, 403 = quota exceeded — rotate to next key
-    if (status === 429 || status === 403) {
+    // 429 = rate limit, 403 = quota exceeded, 401 = invalid key — rotate
+    if (status === 429 || status === 403 || status === 401) {
       markKeyExhausted(key);
       continue;
     }
